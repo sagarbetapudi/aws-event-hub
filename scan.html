@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+  <title>Volunteer Scanner</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #ffffff;
+      --text: #0f172a;
+      --accent: #4f46e5;
+      --accent-hover: #4338ca;
+      --success: #16a34a;
+      --error: #dc2626;
+      --border: #e2e8f0;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #view-pin, #view-scanner {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    #view-scanner { display: none; }
+
+    .card {
+      background: var(--card);
+      width: 100%;
+      max-width: 400px;
+      padding: 32px;
+      border-radius: 16px;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+
+    input[type="password"] {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      margin: 20px 0;
+      font-size: 1.5rem;
+      text-align: center;
+      letter-spacing: 0.5rem;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+    }
+    button {
+      width: 100%;
+      padding: 16px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    #reader { width: 100%; max-width: 400px; aspect-ratio: 1; border-radius: 16px; overflow: hidden; background: #000; }
+
+    #result-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      display: none; align-items: center; justify-content: center;
+      z-index: 1000; font-size: 2rem; font-weight: 800; color: #fff;
+      padding: 20px; text-align: center;
+    }
+    .res-valid { background: var(--success); }
+    .res-error { background: var(--error); }
+  </style>
+</head>
+<body>
+
+  <main id="view-pin">
+    <div class="card">
+      <h1>Volunteer Access</h1>
+      <input id="pinInput" type="password" maxlength="6" placeholder="Enter PIN" inputmode="numeric">
+      <button onclick="setPin()">Start Scanner</button>
+    </div>
+  </main>
+
+  <main id="view-scanner">
+    <div id="reader"></div>
+  </main>
+
+  <div id="result-overlay"></div>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <script>
+    const API_BASE = "https://api.key.amazonaws.com";
+
+    const pinInput = document.getElementById("pinInput");
+    const viewPin = document.getElementById("view-pin");
+    const viewScanner = document.getElementById("view-scanner");
+    const resultOverlay = document.getElementById("result-overlay");
+    const savedPin = sessionStorage.getItem("volunteer_pin");
+    if (savedPin) {
+      pinInput.value = savedPin;
+    }
+
+    async function setPin() {
+  const pin = pinInput.value.trim();
+  if (!pin) return alert("Enter a valid PIN");
+
+  const btn = document.querySelector("#view-pin button");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+
+  try {
+    const res = await fetch(`${API_BASE}/checkin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-volunteer-pin": pin },
+      body: JSON.stringify({ qr: "pin.check" })
+    });
+
+    if (res.status === 401) {
+      alert("Wrong PIN. Try again.");
+      pinInput.value = "";
+      pinInput.focus();
+    } else {
+      
+      sessionStorage.setItem("volunteer_pin", pin);
+      startScanner();
+    }
+  } catch (err) {
+    alert("Cannot reach the server: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Start Scanner";
+  }
+}
+
+    function startScanner() {
+      viewPin.style.display = "none";
+      viewScanner.style.display = "flex";
+
+      const html5QrCode = new Html5Qrcode("reader");
+      html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        (decodedText) => {
+          // Prevent rapid duplicate scans
+          html5QrCode.pause();
+          checkIn(decodedText, html5QrCode);
+        }
+      );
+    }
+
+    async function checkIn(qrText, scanner) {
+  const pin = sessionStorage.getItem("volunteer_pin");
+
+  try {
+    const res = await fetch(`${API_BASE}/checkin`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-volunteer-pin": pin
+      },
+      body: JSON.stringify({ qr: qrText })
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      showResult(true, `✅ VALID<br>${data.name || ''}`);
+    } else {
+      const who = data.name ? `<br>${data.name}` : '';
+      showResult(false, `❌ INVALID${who}<br><small>${data.reason || 'Unknown error'}</small>`);
+    }
+  } catch (err) {
+    showResult(false, `❌ Network error<br><small>${err.message}</small>`);
+  }
+
+  setTimeout(() => {
+    resultOverlay.style.display = "none";
+    scanner.resume();
+  }, 2000);
+}
+
+    function showResult(isValid, message) {
+      resultOverlay.innerHTML = message;
+      resultOverlay.className = isValid ? "res-valid" : "res-error";
+      resultOverlay.style.display = "flex";
+    }
+  </script>
+</body>
+</html>
